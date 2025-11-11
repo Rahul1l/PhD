@@ -15,52 +15,57 @@ st.set_page_config(page_title="CAD Susceptibility Predictor", layout="wide")
 st.title("CAD Susceptibility Predictor")
 
 
-# -------------------------------
+# ===============================
 # LOAD FILE
-# -------------------------------
+# ===============================
 def load_data(file):
     if file.name.lower().endswith((".xlsx", ".xls")):
         return pd.read_excel(file)
     return pd.read_csv(file)
 
 
-# -------------------------------
-# FIND TARGET COLUMN (CAD)
-# -------------------------------
+# ===============================
+# FIND TARGET COLUMN
+# ===============================
 def find_target_col(df):
     for col in df.columns:
         if "cad" in col.lower():
             return col
-    st.error("No CAD column found. Ensure the CAD column contains 'CAD' in its name.")
+    st.error("No column containing 'CAD' found.")
     st.stop()
 
 
-# -------------------------------
-# BUILD PIPELINE
-# -------------------------------
+# ===============================
+# BUILD PREPROCESSING + MODEL
+# ===============================
 def build_pipeline(numeric_cols, categorical_cols):
+
     num_pipe = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("scaler", StandardScaler())
     ])
+
     cat_pipe = Pipeline([
         ("imputer", SimpleImputer(strategy="most_frequent")),
         ("onehot", OneHotEncoder(handle_unknown="ignore"))
     ])
+
     pre = ColumnTransformer([
         ("num", num_pipe, numeric_cols),
         ("cat", cat_pipe, categorical_cols)
     ])
+
     pipe = Pipeline([
         ("pre", pre),
         ("clf", RandomForestClassifier(n_estimators=200, random_state=42))
     ])
+
     return pipe
 
 
-# -------------------------------
-# SESSION VARIABLES
-# -------------------------------
+# ===============================
+# SESSION STATE
+# ===============================
 if "trained" not in st.session_state:
     st.session_state.trained = False
 if "model" not in st.session_state:
@@ -71,13 +76,13 @@ if "df" not in st.session_state:
     st.session_state.df = None
 
 
-# -------------------------------
+# ===============================
 # UPLOAD DATA
-# -------------------------------
+# ===============================
 uploaded = st.file_uploader("Upload Dataset (.csv or .xlsx)", type=["csv", "xlsx"])
 
 if not uploaded:
-    st.info("Upload your dataset to continue.")
+    st.info("Upload your dataset to begin.")
     st.stop()
 
 df = load_data(uploaded)
@@ -88,13 +93,13 @@ st.write("Dataset loaded. Total rows:", df.shape[0])
 st.dataframe(df.head())
 
 
-# -------------------------------
+# ===============================
 # TRAIN MODEL
-# -------------------------------
+# ===============================
 target_col = find_target_col(df)
 
 if st.button("Train Model"):
-    with st.spinner("Training model..."):
+    with st.spinner("Training Model..."):
 
         data = df.dropna(subset=[target_col]).copy()
         data[target_col] = pd.to_numeric(data[target_col], errors="coerce")
@@ -102,7 +107,7 @@ if st.button("Train Model"):
         data[target_col] = data[target_col].astype(int)
 
         if data[target_col].nunique() < 2:
-            st.error("Target column must contain at least 2 classes.")
+            st.error("CAD column must contain at least 2 unique classes.")
             st.stop()
 
         X = data.drop(columns=[target_col])
@@ -111,15 +116,16 @@ if st.button("Train Model"):
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         categorical_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 
-        st.write("Numeric columns:", numeric_cols)
-        st.write("Categorical columns:", categorical_cols)
+        st.write("Numeric:", numeric_cols)
+        st.write("Categorical:", categorical_cols)
 
         pipeline = build_pipeline(numeric_cols, categorical_cols)
 
-        if data.shape[0] < 5:
-            st.warning("Dataset too small for split. Training on full data.")
+        if len(data) < 5:
+            st.warning("Dataset is too small for split. Training on full dataset.")
             pipeline.fit(X, y)
             X_train = X.copy()
+            y_train = y.copy()
         else:
             try:
                 X_train, X_test, y_train, y_test = train_test_split(
@@ -129,10 +135,12 @@ if st.button("Train Model"):
                     X, y, test_size=0.2, random_state=42)
 
             pipeline.fit(X_train, y_train)
+
             preds = pipeline.predict(X_test)
             try:
                 probs = pipeline.predict_proba(X_test)[:, 1]
-                st.write("ROC AUC:", roc_auc_score(y_test, probs))
+                auc = roc_auc_score(y_test, probs)
+                st.write("ROC AUC:", auc)
             except:
                 pass
 
@@ -141,6 +149,7 @@ if st.button("Train Model"):
         pre = pipeline.named_steps["pre"]
         clf = pipeline.named_steps["clf"]
 
+        # Transform X_train for SHAP background
         X_train_trans = pre.transform(X_train)
         try:
             X_train_trans = X_train_trans.toarray()
@@ -156,20 +165,19 @@ if st.button("Train Model"):
         st.session_state.meta = {
             "pre": pre,
             "clf": clf,
-            "X_train_raw": X_train,
-            "X_train_trans": X_train_trans,
             "numeric_cols": numeric_cols,
             "categorical_cols": categorical_cols,
-            "feature_names": feature_names
+            "feature_names": feature_names,
+            "X_train_trans": X_train_trans
         }
         st.session_state.trained = True
 
         st.success("Model trained successfully!")
 
 
-# -----------------------------------
+# ===============================
 # PREDICTION UI
-# -----------------------------------
+# ===============================
 if st.session_state.trained:
 
     st.header("Make a Prediction")
@@ -177,50 +185,53 @@ if st.session_state.trained:
     model = st.session_state.model
     meta = st.session_state.meta
 
-    # -------------------------------
-    # OPTION 1: SELECT ROW
-    # -------------------------------
-    st.subheader("⬇ Option 1: Auto-fill inputs from dataset row")
-    prefill = {}
+    # ---------------------------
+    # OPTION 1: SELECT A ROW
+    # ---------------------------
+    st.subheader("Option 1: Auto-fill from dataset row")
 
-    use_row = st.checkbox("Fill inputs using a row from uploaded dataset")
+    prefill = {}
+    use_row = st.checkbox("Use a row from the dataset")
 
     if use_row:
-        row_index = st.number_input(
-            f"Row index (0 - {df.shape[0]-1})",
-            min_value=0, max_value=df.shape[0]-1, value=0)
+        row_idx = st.number_input(
+            f"Select row index (0 - {df.shape[0]-1})",
+            min_value=0, max_value=df.shape[0]-1, value=0
+        )
 
         if st.button("Load Row"):
-            row = df.iloc[int(row_index)]
+            row = df.iloc[int(row_idx)]
             for col in meta["numeric_cols"] + meta["categorical_cols"]:
                 if col in df.columns:
                     prefill[col] = row[col]
-            st.success(f"Row {row_index} loaded!")
+            st.success(f"Row {row_idx} loaded!")
 
 
-    # -------------------------------
-    # OPTION 2: MANUAL ENTRY
-    # -------------------------------
-    st.subheader("Option 2: Manual Entry (editable even after row selection)")
+    # ---------------------------
+    # MANUAL ENTRY (with prefill)
+    # ---------------------------
+    st.subheader("Option 2: Manual Entry (editable)")
 
     input_dict = {}
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
     for col in meta["numeric_cols"]:
         default = "" if col not in prefill else str(prefill[col])
-        input_dict[col] = col1.text_input(f"{col} (numeric)", value=default)
+        input_dict[col] = c1.text_input(f"{col} (numeric)", value=default)
 
     for col in meta["categorical_cols"]:
         default = "" if col not in prefill else str(prefill[col])
-        input_dict[col] = col2.text_input(f"{col} (text)", value=default)
+        input_dict[col] = c2.text_input(f"{col} (text)", value=default)
 
 
-    # -------------------------------
+    # ---------------------------
     # PREDICT
-    # -------------------------------
+    # ---------------------------
     if st.button("Predict"):
+
         df_input = pd.DataFrame([input_dict])
 
+        # Convert numeric
         for col in meta["numeric_cols"]:
             try:
                 df_input[col] = pd.to_numeric(df_input[col])
@@ -230,18 +241,20 @@ if st.session_state.trained:
         pre = meta["pre"]
         clf = meta["clf"]
 
+        # TRANSFORM (FIXED)
         inst = pre.transform(df_input)
-        inst = inst.toarray() if hasattr(inst, "toarray") else np.array	inst)
+        inst = inst.toarray() if hasattr(inst, "toarray") else np.array(inst)
 
+        # PREDICT
         pred = model.predict(df_input)[0]
         prob = model.predict_proba(df_input)[0][1]
 
         st.success(f"Prediction: {'CAD Susceptible (1)' if pred==1 else 'Not Susceptible (0)'}")
         st.info(f"Probability: {prob:.3f}")
 
-        # -----------------------------------
-        # SHAP (WATERFALL FIX – ALWAYS WORKS)
-        # -----------------------------------
+        # ===============================
+        # SHAP — WATERFALL FIX (NO ERRORS)
+        # ===============================
         st.subheader("SHAP Explanation")
 
         try:
@@ -249,29 +262,27 @@ if st.session_state.trained:
             shap_vals = explainer.shap_values(inst)
             names = meta["feature_names"]
 
-            if isinstance(shap_vals, list):  
+            # For binary: use class 1
+            if isinstance(shap_vals, list):
                 sv = shap_vals[1]
                 base = explainer.expected_value[1]
             else:
                 sv = shap_vals
                 base = explainer.expected_value
 
-            # Global importance bar
+            # --- GLOBAL IMPORTANCE ---
             st.write("Feature importance (mean |SHAP|):")
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(7, 4))
             mean_abs = np.mean(np.abs(sv), axis=0)
             order = np.argsort(mean_abs)[::-1][:15]
             plt.barh(np.array(names)[order[::-1]], mean_abs[order[::-1]])
             st.pyplot(plt.gcf())
             plt.clf()
 
-            # Waterfall explanation
-            st.write("Per-prediction SHAP contribution (Waterfall):")
+            # --- WATERFALL ---
+            st.write("Per-prediction SHAP waterfall:")
             shap.plots._waterfall.waterfall_legacy(
-                base,
-                sv[0],
-                feature_names=names,
-                show=False
+                base, sv[0], feature_names=names, show=False
             )
             st.pyplot(plt.gcf())
             plt.clf()
