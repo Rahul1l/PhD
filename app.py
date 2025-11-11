@@ -85,7 +85,7 @@ df.columns = [str(c).strip() for c in df.columns]
 st.session_state.df = df
 
 st.write("Dataset loaded. Total rows:", df.shape[0])
-st.dataframe(df.head())  # Only shows first few rows
+st.dataframe(df.head())
 
 
 # -------------------------------
@@ -185,7 +185,7 @@ if st.session_state.trained:
     # -------------------------------
     # OPTION 1: SELECT ROW
     # -------------------------------
-    st.subheader("⬇ Option 1: Auto-fill from dataset row")
+    st.subheader("⬇ Option 1: Auto-fill inputs from dataset row")
     prefill = {}
 
     use_row = st.checkbox("Fill inputs using a row from uploaded dataset")
@@ -202,10 +202,11 @@ if st.session_state.trained:
                     prefill[col] = row[col]
             st.success(f"Row {row_index} loaded!")
 
+
     # -------------------------------
-    # OPTION 2: MANUAL ENTRY (editable)
+    # OPTION 2: MANUAL ENTRY
     # -------------------------------
-    st.subheader("Option 2: Manual entry (editable even after row selection)")
+    st.subheader("Option 2: Manual Entry (editable even after row selection)")
 
     input_dict = {}
     col1, col2 = st.columns(2)
@@ -217,6 +218,7 @@ if st.session_state.trained:
     for col in meta["categorical_cols"]:
         default = "" if col not in prefill else str(prefill[col])
         input_dict[col] = col2.text_input(f"{col} (text)", value=default)
+
 
     # -------------------------------
     # PREDICT
@@ -231,10 +233,10 @@ if st.session_state.trained:
             except:
                 df_input[col] = np.nan
 
-        # Transform input
         pre = meta["pre"]
         clf = meta["clf"]
 
+        # Transform
         inst = pre.transform(df_input)
         inst = inst.toarray() if hasattr(inst, "toarray") else np.array(inst)
 
@@ -246,49 +248,42 @@ if st.session_state.trained:
         st.info(f"Probability: {prob:.3f}")
 
         # -----------------------------------
-        # SHAP EXPLANATION
+        # SHAP EXPLANATION (compatible with all SHAP versions)
         # -----------------------------------
         st.subheader("SHAP Explanation")
 
         try:
-            bg = meta["X_train_trans"]
-            if bg.shape[0] > 200:
-                idx = np.random.choice(bg.shape[0], 200, replace=False)
-                bg = bg[idx]
-
-            explainer = shap.TreeExplainer(
-                clf,
-                data=bg,
-                feature_perturbation="interventional",
-                check_additivity=False
-            )
-
+            explainer = shap.TreeExplainer(clf)
             shap_vals = explainer.shap_values(inst)
+            feature_names = meta["feature_names"]
 
             # Global importance
-            st.write("Feature importance:")
+            st.write("Feature importance (mean |SHAP|):")
             plt.figure(figsize=(7, 4))
-            sv = shap_vals[1] if isinstance(shap_vals, list) else shap_vals
-            mean_abs = np.mean(np.abs(sv), axis=1)
-            order = np.argsort(mean_abs)[::-1][:15]
-            names = meta["feature_names"]
 
-            plt.barh(np.array(names)[order[::-1]], mean_abs[order[::-1]])
+            if isinstance(shap_vals, list):
+                sv = shap_vals[1]  # class 1 for binary classification
+            else:
+                sv = shap_vals
+
+            mean_abs = np.mean(np.abs(sv), axis=0)
+            order = np.argsort(mean_abs)[::-1][:15]
+
+            plt.barh(np.array(feature_names)[order[::-1]], mean_abs[order[::-1]])
             st.pyplot(plt.gcf())
             plt.clf()
 
-            # Waterfall
-            try:
-                shap.plots._waterfall.waterfall_legacy(
+            # Force plot per prediction
+            st.write("Per-prediction explanation:")
+            shap.initjs()
+            st.write(
+                shap.force_plot(
                     explainer.expected_value[1] if isinstance(shap_vals, list) else explainer.expected_value,
                     sv[0],
-                    feature_names=names,
-                    show=False
+                    feature_names,
+                    matplotlib=True
                 )
-                st.pyplot(plt.gcf())
-                plt.clf()
-            except:
-                pass
+            )
 
         except Exception as e:
             st.error(f"SHAP explanation failed: {e}")
