@@ -12,7 +12,7 @@ import shap
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="CAD Susceptibility Predictor", layout="wide")
-st.title("CAD Susceptibility Predictor (Upload Your Dataset)")
+st.title("CAD Susceptibility Predictor")
 
 
 # -------------------------------
@@ -96,7 +96,6 @@ target_col = find_target_col(df)
 if st.button("Train Model"):
     with st.spinner("Training model..."):
 
-        # Clean target
         data = df.dropna(subset=[target_col]).copy()
         data[target_col] = pd.to_numeric(data[target_col], errors="coerce")
         data = data.dropna(subset=[target_col])
@@ -109,7 +108,6 @@ if st.button("Train Model"):
         X = data.drop(columns=[target_col])
         y = data[target_col]
 
-        # Detect numeric + categorical
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         categorical_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 
@@ -118,12 +116,10 @@ if st.button("Train Model"):
 
         pipeline = build_pipeline(numeric_cols, categorical_cols)
 
-        # Safe train-test split
         if data.shape[0] < 5:
             st.warning("Dataset too small for split. Training on full data.")
             pipeline.fit(X, y)
             X_train = X.copy()
-            y_train = y.copy()
         else:
             try:
                 X_train, X_test, y_train, y_test = train_test_split(
@@ -142,7 +138,6 @@ if st.button("Train Model"):
 
             st.text(classification_report(y_test, preds, zero_division=0))
 
-        # Save metadata
         pre = pipeline.named_steps["pre"]
         clf = pipeline.named_steps["clf"]
 
@@ -226,7 +221,6 @@ if st.session_state.trained:
     if st.button("Predict"):
         df_input = pd.DataFrame([input_dict])
 
-        # Convert numeric
         for col in meta["numeric_cols"]:
             try:
                 df_input[col] = pd.to_numeric(df_input[col])
@@ -236,11 +230,9 @@ if st.session_state.trained:
         pre = meta["pre"]
         clf = meta["clf"]
 
-        # Transform
         inst = pre.transform(df_input)
-        inst = inst.toarray() if hasattr(inst, "toarray") else np.array(inst)
+        inst = inst.toarray() if hasattr(inst, "toarray") else np.array	inst)
 
-        # Prediction
         pred = model.predict(df_input)[0]
         prob = model.predict_proba(df_input)[0][1]
 
@@ -248,42 +240,41 @@ if st.session_state.trained:
         st.info(f"Probability: {prob:.3f}")
 
         # -----------------------------------
-        # SHAP EXPLANATION (compatible with all SHAP versions)
+        # SHAP (WATERFALL FIX – ALWAYS WORKS)
         # -----------------------------------
         st.subheader("SHAP Explanation")
 
         try:
             explainer = shap.TreeExplainer(clf)
             shap_vals = explainer.shap_values(inst)
-            feature_names = meta["feature_names"]
+            names = meta["feature_names"]
 
-            # Global importance
-            st.write("Feature importance (mean |SHAP|):")
-            plt.figure(figsize=(7, 4))
-
-            if isinstance(shap_vals, list):
-                sv = shap_vals[1]  # class 1 for binary classification
+            if isinstance(shap_vals, list):  
+                sv = shap_vals[1]
+                base = explainer.expected_value[1]
             else:
                 sv = shap_vals
+                base = explainer.expected_value
 
+            # Global importance bar
+            st.write("Feature importance (mean |SHAP|):")
+            plt.figure(figsize=(7,4))
             mean_abs = np.mean(np.abs(sv), axis=0)
             order = np.argsort(mean_abs)[::-1][:15]
-
-            plt.barh(np.array(feature_names)[order[::-1]], mean_abs[order[::-1]])
+            plt.barh(np.array(names)[order[::-1]], mean_abs[order[::-1]])
             st.pyplot(plt.gcf())
             plt.clf()
 
-            # Force plot per prediction
-            st.write("Per-prediction explanation:")
-            shap.initjs()
-            st.write(
-                shap.force_plot(
-                    explainer.expected_value[1] if isinstance(shap_vals, list) else explainer.expected_value,
-                    sv[0],
-                    feature_names,
-                    matplotlib=True
-                )
+            # Waterfall explanation
+            st.write("Per-prediction SHAP contribution (Waterfall):")
+            shap.plots._waterfall.waterfall_legacy(
+                base,
+                sv[0],
+                feature_names=names,
+                show=False
             )
+            st.pyplot(plt.gcf())
+            plt.clf()
 
         except Exception as e:
             st.error(f"SHAP explanation failed: {e}")
